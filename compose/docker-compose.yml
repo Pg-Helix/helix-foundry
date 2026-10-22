@@ -1,0 +1,56 @@
+# Phase 1 local stack (RFC-0005, helix-atlas). Assumes this workspace's
+# sibling-checkout layout (helix-kernel, helix-cortex next to
+# helix-foundry) -- build contexts are relative paths into those
+# checkouts, not a generally released artifact yet.
+#
+# Requires a .env file (gitignored, never committed) with
+# HELIX_ADMIN_PASSWORD/HELIX_WORKER_PASSWORD/HELIX_APP_PASSWORD set --
+# run ./generate-env.sh once to create one with fresh random values.
+# Bring up with `docker compose -f compose/docker-compose.yml up --build`.
+services:
+  postgres:
+    build:
+      context: ../../helix-kernel
+      dockerfile: ../helix-foundry/images/kernel/Dockerfile
+      args:
+        PG_MAJOR: "17"
+    environment:
+      # SCRAM, not trust: a wrong/missing password must fail, not obtain
+      # superuser access over the published port. POSTGRES_PASSWORD is
+      # the bootstrap admin credential the official postgres image
+      # requires once HOST_AUTH_METHOD isn't trust; HELIX_*_PASSWORD are
+      # read by compose/initdb/01-install.sh to create helix_worker/
+      # helix_app with their own separate credentials, never this one.
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_PASSWORD: ${HELIX_ADMIN_PASSWORD:?set in .env -- run ./generate-env.sh}
+      HELIX_WORKER_PASSWORD: ${HELIX_WORKER_PASSWORD:?set in .env -- run ./generate-env.sh}
+      HELIX_APP_PASSWORD: ${HELIX_APP_PASSWORD:?set in .env -- run ./generate-env.sh}
+    volumes:
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    ports:
+      # Loopback-bound by default, not published to every interface; the
+      # port is still needed (not removed) because the acceptance suite
+      # and local debugging connect from the host. Override
+      # HELIX_PG_PORT to avoid a collision with another local Postgres.
+      - "127.0.0.1:${HELIX_PG_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  worker:
+    build:
+      context: ../../helix-cortex
+      dockerfile: ../helix-foundry/images/cortex/Dockerfile
+    environment:
+      # helix_worker only -- no application-table privilege, no helix_owner
+      # or helix_app credential (RFC-0005's point, not an oversight).
+      DATABASE_URL: postgres://helix_worker:${HELIX_WORKER_PASSWORD:?set in .env -- run ./generate-env.sh}@postgres:5432/postgres?sslmode=disable
+      CORTEX_MODEL_ID: local-mock-embed
+      CORTEX_MODEL_REVISION: v1
+      CORTEX_MODEL_DIMS: "8"
+      CORTEX_POLL_INTERVAL_MS: "250"
+    depends_on:
+      postgres:
+        condition: service_healthy
