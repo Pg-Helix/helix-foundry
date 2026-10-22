@@ -21,3 +21,9 @@ FROM postgres:${PG_MAJOR}
 ARG PG_MAJOR
 COPY --from=builder /usr/lib/postgresql/${PG_MAJOR}/lib/helix.so /usr/lib/postgresql/${PG_MAJOR}/lib/helix.so
 COPY --from=builder /usr/share/postgresql/${PG_MAJOR}/extension/helix* /usr/share/postgresql/${PG_MAJOR}/extension/
+# The single canonical ownership-reassignment script (ADR-0006 decision
+# 1) -- this build context IS a helix-kernel checkout, so this is a
+# same-repo COPY, not a cross-repo one. compose/initdb/01-install.sh
+# runs it after CREATE EXTENSION, instead of this image or that script
+# keeping its own separate copy of the same object list.
+COPY sql/post_install_ownership.sql /post_install_ownership.sql
