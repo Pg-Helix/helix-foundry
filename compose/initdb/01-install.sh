@@ -4,12 +4,16 @@
 # executable .sh scripts with the container's environment available, so
 # HELIX_WORKER_PASSWORD/HELIX_APP_PASSWORD (set via Compose from the
 # gitignored .env -- see generate-env.sh, never hardcoded or committed)
-# can be substituted into the role-creation statements. Four roles, four
+# can be substituted into the role-creation statements. Five roles, five
 # separate credentials, exactly RFC-0005's point:
-#   helix_owner   NOLOGIN, schema owner -- never held by a running process.
-#   helix_worker  the narrow worker role -- held only by the `worker` service.
-#   helix_app     seeds/reads demo data -- held only by the demo script,
-#                 never by `worker`.
+#   helix_owner      NOLOGIN, schema owner -- never held by a running process.
+#   helix_worker     the narrow worker role -- held only by the `worker` service.
+#   helix_app        seeds/reads demo data -- held only by the demo script,
+#                    never by `worker`.
+#   helix_cortex_api owns the cortex schema and serves the HTTP ingestion/
+#                    retrieval API (ADR-0007, Workflow 2) -- never holds
+#                    claim_job/publish_result/get_job_input, same privilege
+#                    boundary RFC-0003 draws for the embedding worker itself.
 # (A read-only role for `command`/doctor is not created here: this slice
 # keeps the CLI's existing TCP/config-only doctor unchanged, per the
 # governance note deferring that to a later milestone.)
@@ -24,8 +28,13 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
 CREATE ROLE helix_owner NOLOGIN NOSUPERUSER NOBYPASSRLS;
 CREATE ROLE helix_worker LOGIN PASSWORD '$HELIX_WORKER_PASSWORD';
 CREATE ROLE helix_app LOGIN PASSWORD '$HELIX_APP_PASSWORD';
+CREATE ROLE helix_cortex_api LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '$HELIX_CORTEX_API_PASSWORD';
 
 CREATE EXTENSION helix;
+-- pgvector (ADR-0007, Workflow 2 C3): created once, database-wide; the
+-- vector type and its distance operators are then usable by any role
+-- without a further per-role grant, same as any other built-in type.
+CREATE EXTENSION vector;
 EOSQL
 
 # Single canonical ownership-reassignment script (not a copy of the same
@@ -43,6 +52,10 @@ GRANT CREATE ON SCHEMA public TO helix_owner;
 -- since every test table there is created by the same role that ran this
 -- statement).
 ALTER DEFAULT PRIVILEGES FOR ROLE helix_app GRANT SELECT, TRIGGER ON TABLES TO helix_owner;
+-- Same requirement, for helix_cortex_api's own cortex.chunk table
+-- (ADR-0007): register_source's _ensure_capture_trigger runs as
+-- helix_owner and needs TRIGGER on a table it doesn't own.
+ALTER DEFAULT PRIVILEGES FOR ROLE helix_cortex_api GRANT SELECT, TRIGGER ON TABLES TO helix_owner;
 
 -- helix_app registers/seeds demo tables; it needs ordinary CREATE/INSERT
 -- on public like any application role would. It also reads its own
@@ -59,6 +72,24 @@ GRANT USAGE ON SCHEMA helix_ai TO helix_worker;
 GRANT EXECUTE ON FUNCTION helix_ai.claim_job(text, integer, integer) TO helix_worker;
 GRANT EXECUTE ON FUNCTION helix_ai.publish_result(uuid, integer, text, text, text, jsonb) TO helix_worker;
 GRANT EXECUTE ON FUNCTION helix_ai.get_job_input(uuid, integer) TO helix_worker;
+
+-- helix_cortex_api (ADR-0007): owns its own schema outright (its own
+-- migrations run as this role, no separate admin credential needed for
+-- DDL within it) and reads helix_ai directly for dense retrieval
+-- (casting derived_value's jsonb inline to pgvector's vector type,
+-- decision 4 -- never a persisted second copy of the embedding) and the
+-- known-residual status-view grant gap this role closes narrowly rather
+-- than widening PUBLIC. It never receives claim_job/publish_result/
+-- get_job_input -- RunOnce's claim/embed/publish loop runs only in the
+-- worker process, under helix_worker's own separate credential.
+CREATE SCHEMA cortex AUTHORIZATION helix_cortex_api;
+GRANT USAGE ON SCHEMA helix_ai TO helix_cortex_api;
+GRANT SELECT ON helix_ai.source, helix_ai.derived_value, helix_ai.status TO helix_cortex_api;
+-- register_source's _create_enriched_view runs as helix_owner and
+-- creates cortex.chunk_ai IN the cortex schema -- caught by actually
+-- registering cortex.chunk end to end, not just reading the grants:
+-- table-level SELECT/TRIGGER (above) is not schema-level USAGE/CREATE.
+GRANT USAGE, CREATE ON SCHEMA cortex TO helix_owner;
 EOSQL
 
 # POSTGRES_HOST_AUTH_METHOD=scram-sha-256 is not enough on its own: the

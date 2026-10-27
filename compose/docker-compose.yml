@@ -25,6 +25,7 @@ services:
       POSTGRES_PASSWORD: ${HELIX_ADMIN_PASSWORD:?set in .env -- run ./generate-env.sh}
       HELIX_WORKER_PASSWORD: ${HELIX_WORKER_PASSWORD:?set in .env -- run ./generate-env.sh}
       HELIX_APP_PASSWORD: ${HELIX_APP_PASSWORD:?set in .env -- run ./generate-env.sh}
+      HELIX_CORTEX_API_PASSWORD: ${HELIX_CORTEX_API_PASSWORD:?set in .env -- run ./generate-env.sh}
     volumes:
       - ./initdb:/docker-entrypoint-initdb.d:ro
     ports:
@@ -51,6 +52,31 @@ services:
       CORTEX_MODEL_REVISION: v1
       CORTEX_MODEL_DIMS: "8"
       CORTEX_POLL_INTERVAL_MS: "250"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Workflow 2 (ADR-0007): the ingestion/retrieval HTTP API, a separate
+  # process and a separate credential from `worker` above -- never holds
+  # claim_job/publish_result/get_job_input, same privilege boundary
+  # RFC-0003 draws for the embedding worker itself. Chunk embeddings it
+  # enqueues (via request_refresh, same as any other registered source)
+  # are picked up by the SAME `worker` service above, unmodified.
+  cortex-api:
+    build:
+      context: ../../helix-cortex
+      dockerfile: ../helix-foundry/images/cortex-api/Dockerfile
+    environment:
+      DATABASE_URL: postgres://helix_cortex_api:${HELIX_CORTEX_API_PASSWORD:?set in .env -- run ./generate-env.sh}@postgres:5432/postgres?sslmode=disable
+      CORTEX_AUTH_PROFILE: local-fixture
+      CORTEX_AUTH_FIXTURE_FILE: /auth-fixture.json
+      CORTEX_CHUNK_MODEL_ID: local-mock-embed
+      CORTEX_CHUNK_MODEL_REVISION: v1
+      CORTEX_CHUNK_MODEL_DIMS: "8"
+    volumes:
+      - ./auth-fixture.json:/auth-fixture.json:ro
+    ports:
+      - "127.0.0.1:${HELIX_CORTEX_API_PORT:-55480}:8080"
     depends_on:
       postgres:
         condition: service_healthy

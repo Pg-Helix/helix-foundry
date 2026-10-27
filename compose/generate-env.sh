@@ -25,6 +25,7 @@ cat > "$ENV_FILE" <<EOF
 HELIX_ADMIN_PASSWORD=$(random_password)
 HELIX_WORKER_PASSWORD=$(random_password)
 HELIX_APP_PASSWORD=$(random_password)
+HELIX_CORTEX_API_PASSWORD=$(random_password)
 EOF
 chmod 600 "$ENV_FILE"
 echo "generate-env.sh: wrote $ENV_FILE"
