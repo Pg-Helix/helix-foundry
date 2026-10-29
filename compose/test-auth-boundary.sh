@@ -50,18 +50,31 @@ expect_ok() {
 expect_fail "wrong admin password rejected" psql_as postgres "deliberately-wrong" -c "SELECT 1"
 expect_fail "wrong worker password rejected" psql_as helix_worker "deliberately-wrong" -c "SELECT 1"
 expect_fail "wrong app password rejected" psql_as helix_app "deliberately-wrong" -c "SELECT 1"
+expect_fail "wrong cortex_api password rejected" psql_as helix_cortex_api "deliberately-wrong" -c "SELECT 1"
 expect_fail "missing password rejected" $COMPOSE exec -T postgres psql -X -q -h 127.0.0.1 -U helix_worker -d postgres -c "SELECT 1"
 
 # --- Correct credentials work ---
 expect_ok "correct admin password accepted" psql_as postgres "$HELIX_ADMIN_PASSWORD" -c "SELECT 1"
 expect_ok "correct worker password accepted" psql_as helix_worker "$HELIX_WORKER_PASSWORD" -c "SELECT 1"
 expect_ok "correct app password accepted" psql_as helix_app "$HELIX_APP_PASSWORD" -c "SELECT 1"
+expect_ok "correct cortex_api password accepted" psql_as helix_cortex_api "$HELIX_CORTEX_API_PASSWORD" -c "SELECT 1"
 
 # --- The worker, authenticated correctly, still cannot escalate ---
 expect_fail "worker cannot SET ROLE helix_app" psql_as helix_worker "$HELIX_WORKER_PASSWORD" -c "SET ROLE helix_app"
 expect_fail "worker cannot SET ROLE helix_owner" psql_as helix_worker "$HELIX_WORKER_PASSWORD" -c "SET ROLE helix_owner"
+expect_fail "worker cannot SET ROLE helix_cortex_api" psql_as helix_worker "$HELIX_WORKER_PASSWORD" -c "SET ROLE helix_cortex_api"
 expect_fail "worker cannot read helix_ai.source directly" psql_as helix_worker "$HELIX_WORKER_PASSWORD" -c "SELECT * FROM helix_ai.source"
 expect_fail "worker cannot read helix_ai.derived_value directly" psql_as helix_worker "$HELIX_WORKER_PASSWORD" -c "SELECT * FROM helix_ai.derived_value"
+
+# --- cortex_api (ADR-0007) can read helix_ai for retrieval but holds
+# none of the worker's publish-side privileges -- the two processes'
+# credentials must not overlap in either direction. ---
+expect_fail "cortex_api cannot SET ROLE helix_worker" psql_as helix_cortex_api "$HELIX_CORTEX_API_PASSWORD" -c "SET ROLE helix_worker"
+expect_fail "cortex_api cannot SET ROLE helix_owner" psql_as helix_cortex_api "$HELIX_CORTEX_API_PASSWORD" -c "SET ROLE helix_owner"
+expect_fail "cortex_api cannot call claim_job" psql_as helix_cortex_api "$HELIX_CORTEX_API_PASSWORD" -c "SELECT helix_ai.claim_job('no-such-model')"
+expect_fail "cortex_api cannot call publish_result" psql_as helix_cortex_api "$HELIX_CORTEX_API_PASSWORD" -c "SELECT helix_ai.publish_result('00000000-0000-0000-0000-000000000000'::uuid, 1, 'x', 'x', 'x', '{}'::jsonb)"
+expect_fail "cortex_api cannot call get_job_input" psql_as helix_cortex_api "$HELIX_CORTEX_API_PASSWORD" -c "SELECT helix_ai.get_job_input('00000000-0000-0000-0000-000000000000'::uuid, 1)"
+expect_ok "cortex_api can read helix_ai.status" psql_as helix_cortex_api "$HELIX_CORTEX_API_PASSWORD" -c "SELECT * FROM helix_ai.status LIMIT 0"
 
 # --- A throwaway application table proves the worker has zero
 # application-table privilege, not just zero helix_ai privilege. ---
