@@ -45,6 +45,12 @@ services:
       CORTEX_CHUNK_MODEL_ID: nomic-embed-text
       CORTEX_CHUNK_MODEL_REVISION: v1.5
       CORTEX_CHUNK_MODEL_DIMS: "768"
+      # Passthrough, not a value set here: default unset/0 (reranker on,
+      # unchanged). helix-labs/eval sets this to compare both
+      # configurations against the same real binding -- see
+      # store.Store.DisableRerank's own doc comment for why this
+      # opt-out exists.
+      CORTEX_DISABLE_RERANK: ${CORTEX_DISABLE_RERANK:-0}
     depends_on:
       ollama:
         condition: service_healthy
