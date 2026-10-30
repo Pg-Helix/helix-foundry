@@ -1,0 +1,68 @@
+# The real, local CPU embedding profile (ADR-0007 follow-on, this
+# milestone). An explicit OVERRIDE, never the default: the base
+# docker-compose.yml's mock profile stays fast and network-free at
+# inference time, and nothing here activates unless this file is
+# EXPLICITLY added to the compose invocation:
+#
+#   docker compose -f compose/docker-compose.yml \
+#                   -f compose/docker-compose.real-embeddings.yml \
+#                   up --build
+#
+# Adds the `ollama` service (images/ollama/Dockerfile: a pinned Ollama
+# runtime with the pinned nomic-embed-text:v1.5 weights baked into the
+# image at build time -- see that Dockerfile's own comments for the
+# exact pins and how they were verified) and repoints cortex-api/
+# chunk-worker's embedding provider at it. Everything else (postgres,
+# the auth fixture, cortex's own schema/migrations) is unchanged.
+services:
+  ollama:
+    build:
+      context: ../images/ollama
+      dockerfile: Dockerfile
+    # Not published to the host by default: cortex-api/chunk-worker
+    # reach it over the compose network by service name ("ollama"),
+    # which is all they need. Set HELIX_OLLAMA_PORT to also expose it
+    # on loopback for host-side debugging (e.g. curl it directly).
+    ports:
+      - "127.0.0.1:${HELIX_OLLAMA_PORT:-55490}:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  cortex-api:
+    environment:
+      CORTEX_EMBED_PROVIDER: openai-compat
+      CORTEX_EMBED_BASE_URL: http://ollama:11434/v1
+      # Ollama ignores this value entirely; set to a non-empty
+      # placeholder only because the adapter always sends an
+      # Authorization header.
+      CORTEX_EMBED_API_KEY: unused
+      CORTEX_EMBED_WIRE_MODEL: nomic-embed-text:v1.5
+      CORTEX_EMBED_MAX_RETRIES: "2"
+      CORTEX_CHUNK_MODEL_ID: nomic-embed-text
+      CORTEX_CHUNK_MODEL_REVISION: v1.5
+      CORTEX_CHUNK_MODEL_DIMS: "768"
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  chunk-worker:
+    environment:
+      CORTEX_EMBED_PROVIDER: openai-compat
+      CORTEX_EMBED_BASE_URL: http://ollama:11434/v1
+      CORTEX_EMBED_API_KEY: unused
+      CORTEX_EMBED_WIRE_MODEL: nomic-embed-text:v1.5
+      CORTEX_EMBED_MAX_RETRIES: "2"
+      CORTEX_MODEL_ID: nomic-embed-text
+      CORTEX_MODEL_REVISION: v1.5
+      CORTEX_MODEL_DIMS: "768"
+      # Lease-length-matched embed deadline (worker.go's EmbedTimeout):
+      # a real provider call must not be allowed to outlive the lease
+      # it's working under.
+      CORTEX_EMBED_TIMEOUT_SECONDS: "30"
+    depends_on:
+      ollama:
+        condition: service_healthy
