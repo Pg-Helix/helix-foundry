@@ -51,7 +51,23 @@ expect_fail "wrong admin password rejected" psql_as postgres "deliberately-wrong
 expect_fail "wrong worker password rejected" psql_as helix_worker "deliberately-wrong" -c "SELECT 1"
 expect_fail "wrong app password rejected" psql_as helix_app "deliberately-wrong" -c "SELECT 1"
 expect_fail "wrong cortex_api password rejected" psql_as helix_cortex_api "deliberately-wrong" -c "SELECT 1"
-expect_fail "missing password rejected" $COMPOSE exec -T postgres psql -X -q -h 127.0.0.1 -U helix_worker -d postgres -c "SELECT 1"
+
+# Missing password: --no-password, so psql never prompts (under exec -T a
+# prompt reads the caller's stdin and can wait forever). Counts only as
+# psql's own rejection for the missing credential -- exit 2 with "no
+# password supplied" -- within a deadline: a timeout (124) or a Docker
+# error is a FAIL, not a rejection. The positive control below
+# ("correct worker password accepted") is the same role and TCP path.
+rc=0
+timeout 60 $COMPOSE exec -T postgres psql --no-password -X -q -h 127.0.0.1 -U helix_worker -d postgres -c "SELECT 1" \
+    >/tmp/auth_boundary_out.log 2>&1 || rc=$?
+if [ "$rc" -eq 2 ] && grep -q "no password supplied" /tmp/auth_boundary_out.log; then
+    echo "ok: missing password rejected ($(grep -o 'no password supplied' /tmp/auth_boundary_out.log | head -1), psql exit 2)"
+else
+    echo "FAIL: missing password rejected (expected psql exit 2 'no password supplied', got exit $rc)"
+    cat /tmp/auth_boundary_out.log
+    fail=1
+fi
 
 # --- Correct credentials work ---
 expect_ok "correct admin password accepted" psql_as postgres "$HELIX_ADMIN_PASSWORD" -c "SELECT 1"
